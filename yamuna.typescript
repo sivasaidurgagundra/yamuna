@@ -1,0 +1,477 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { MessageSquare, Timer, Sun, Moon, Download, Trash2, Play, Pause, BarChart3, Sparkles, CheckCircle2, XCircle, RotateCcw, BookOpen, Settings2, Mic, Volume2, Copy, ClipboardCheck, Save, Loader2 } from "lucide-react";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+
+// --- Utility helpers ---
+const uid = () => Math.random().toString(36).slice(2);
+const now = () => new Date().toLocaleTimeString();
+
+const THEMES = {
+  light: "bg-slate-50 text-slate-900",
+  dark: "bg-slate-900 text-slate-100"
+};
+
+const tonePalette = {
+  Positive: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200",
+  Neutral: "bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-200",
+  Negative: "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200",
+};
+
+const scenarios = [
+  {
+    id: "casual",
+    name: "Casual DM",
+    description: "Light small-talk, keeping things friendly and clear.",
+    systemTips: [
+      "Ask one open question.",
+      "Mirror a keyword to show you're listening.",
+      "Keep sentences under 18 words for readability.",
+    ],
+    botOpeners: [
+      "Hey! Been a minute — how's your week treating you?",
+      "Quick hello 👋 What's something fun you've done lately?",
+      "Random thought: tried any new music recently?",
+    ],
+    botPrompts: [
+      "I'm planning a weekend plan; got ideas?",
+      "I might switch phones. Any must-know tips?",
+      "Thinking about learning guitar. Where would you start?",
+    ],
+    quickPhrases: ["That makes sense!", "Love that idea.", "Tell me more about…", "Totally fair."]
+  },
+  {
+    id: "interview",
+    name: "Job Interview",
+    description: "Concise, confident, and structured responses.",
+    systemTips: [
+      "Use the STAR method (Situation, Task, Action, Result).",
+      "Lead with outcomes and impact.",
+      "Close with a question that shows research.",
+    ],
+    botOpeners: [
+      "Thanks for joining. Could you walk me through a recent project you're proud of?",
+      "How do you handle conflicting priorities with tight deadlines?",
+      "Tell me about a time you influenced without authority.",
+    ],
+    botPrompts: [
+      "Why are you interested in this role specifically?",
+      "Describe a challenging bug and how you solved it.",
+      "How do you measure success for your work?",
+    ],
+    quickPhrases: [
+      "Happy to elaborate on the impact.",
+      "I validated this with metrics.",
+      "Trade-offs I considered were…",
+      "A follow-up question if I may…",
+    ]
+  },
+  {
+    id: "support",
+    name: "Customer Support",
+    description: "Empathy + clarity + next steps.",
+    systemTips: [
+      "Acknowledge the emotion.",
+      "Summarize the issue in your own words.",
+      "Offer one clear next step.",
+    ],
+    botOpeners: [
+      "Hi, my order arrived damaged and I'm pretty frustrated.",
+      "Your app keeps crashing when I try to pay.",
+      "I was double-charged this month.",
+    ],
+    botPrompts: [
+      "Can you fix this today?",
+      "What info do you need from me?",
+      "How long will a refund take?",
+    ],
+    quickPhrases: [
+      "I completely understand how that feels.",
+      "Here's what I'm going to do now…",
+      "I've summarized the steps below.",
+      "Does that work for you?",
+    ]
+  },
+  {
+    id: "negotiation",
+    name: "Negotiation",
+    description: "Calm persuasion and principled trade-offs.",
+    systemTips: [
+      "Anchor with a clear target.",
+      "Trade low-cost / high-value concessions.",
+      "Clarify BATNA and timelines.",
+    ],
+    botOpeners: [
+      "The price seems high for our budget. Can you do better?",
+      "We like it, but need an earlier delivery.",
+      "Competitor X offered longer warranty.",
+    ],
+    botPrompts: [
+      "What's the best you can do today?",
+      "Can you bundle onboarding?",
+      "What happens if we sign this week?",
+    ],
+    quickPhrases: [
+      "Here’s one way to bridge the gap.",
+      "If we adjust scope, we can meet there.",
+      "Let’s put numbers to that.",
+      "What would make this a yes today?",
+    ]
+  },
+];
+
+const defaultHistory = () => ({ id: uid(), date: new Date().toISOString(), scenario: "casual", turns: [], score: 0 });
+
+function useLocalStorage(key, initial) {
+  const [value, setValue] = useState(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : initial;
+    } catch {
+      return initial;
+    }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+  }, [key, value]);
+  return [value, setValue];
+}
+
+function speak(text) {
+  if (typeof window === 'undefined') return;
+  const synth = window.speechSynthesis;
+  if (!synth) return;
+  const utter = new SpeechSynthesisUtterance(text);
+  synth.speak(utter);
+}
+
+export default function ChatPrepCoach() {
+  const [theme, setTheme] = useLocalStorage("cpc-theme", "dark");
+  const [scenarioId, setScenarioId] = useLocalStorage("cpc-scenario", "interview");
+  const scenario = useMemo(() => scenarios.find(s => s.id === scenarioId)!, [scenarioId]);
+  const [input, setInput] = useState("");
+  const [chat, setChat] = useLocalStorage("cpc-chat", []);
+  const [history, setHistory] = useLocalStorage("cpc-history", []);
+  const [session, setSession] = useLocalStorage("cpc-session", defaultHistory());
+  const [running, setRunning] = useState(false);
+  const [seconds, setSeconds] = useState(120);
+  const inputRef = useRef(null);
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef(null);
+
+  // Timer
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setSeconds(s => Math.max(0, s - 1)), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+  useEffect(() => { if (seconds === 0) setRunning(false); }, [seconds]);
+
+  // Auto opener when scenario changes
+  useEffect(() => {
+    const opener = pickRandom(scenario.botOpeners);
+    const m = { id: uid(), role: "bot", text: opener, time: now() };
+    setChat([m]);
+    setSession((s) => ({ ...s, id: uid(), date: new Date().toISOString(), scenario: scenario.id, turns: [m], score: 0 }));
+  }, [scenarioId]);
+
+  // Voice input setup
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return;
+    const r = new SR();
+    r.continuous = false; r.lang = 'en-US'; r.interimResults = false; r.maxAlternatives = 1;
+    r.onresult = (e) => {
+      const txt = e.results[0][0].transcript;
+      setInput((prev) => (prev ? prev + " " : "") + txt);
+      setListening(false);
+    };
+    r.onend = () => setListening(false);
+    recognitionRef.current = r;
+  }, []);
+
+  const score = useMemo(() => computeScore(chat), [chat]);
+  const scoreTone = useMemo(() => assessTone(chat), [chat]);
+
+  useEffect(() => {
+    setSession(s => ({ ...s, turns: chat, score }));
+  }, [chat, score]);
+
+  function pickRandom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+  function botReply() {
+    const prompt = pickRandom(scenario.botPrompts);
+    const text = prompt + (Math.random() > 0.6 ? " Could you be specific?" : "");
+    const m = { id: uid(), role: "bot", text, time: now() };
+    setChat(c => [...c, m]);
+    speak(text);
+  }
+
+  function sendUser() {
+    if (!input.trim()) return;
+    const m = { id: uid(), role: "user", text: input.trim(), time: now() };
+    setChat(c => [...c, m]);
+    setInput("");
+    setTimeout(botReply, 350 + Math.random() * 600);
+  }
+
+  function resetSession() {
+    setChat([]);
+    setSession(defaultHistory());
+    const opener = pickRandom(scenario.botOpeners);
+    const m = { id: uid(), role: "bot", text: opener, time: now() };
+    setChat([m]);
+  }
+
+  function saveSession() {
+    setHistory(h => [{ ...session, id: uid(), date: new Date().toISOString() }, ...h].slice(0, 25));
+  }
+
+  function exportSession() {
+    const data = JSON.stringify(session, null, 2);
+    const blob = new Blob([data], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `chatprep-${session.scenario}-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function copyBestReply() {
+    const lastBot = [...chat].reverse().find(m => m.role === "bot");
+    if (!lastBot) return;
+    const template = suggestReply(lastBot.text, scenarioId);
+    navigator.clipboard.writeText(template).catch(() => {});
+  }
+
+  const minutes = String(Math.floor(seconds/60)).padStart(2,'0');
+  const secs = String(seconds%60).padStart(2,'0');
+
+  return (
+    <div className={`${THEMES[theme]} min-h-screen transition-colors duration-300`}> 
+      <div className="max-w-6xl mx-auto p-4 sm:p-6">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <Sparkles className="w-6 h-6" />
+            <h1 className="text-2xl sm:text-3xl font-bold">ChatPrep Coach</h1>
+            <span className="text-xs sm:text-sm opacity-70 px-2 py-1 rounded-xl border border-slate-400/30">Practice smarter conversations</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} className="px-3 py-2 rounded-2xl border border-slate-400/30 hover:shadow">
+              {theme === 'dark' ? <Sun className="w-5 h-5"/> : <Moon className="w-5 h-5"/>}
+            </button>
+            <button onClick={saveSession} className="px-3 py-2 rounded-2xl border border-slate-400/30 hover:shadow flex items-center gap-2"><Save className="w-4 h-4"/>Save</button>
+            <button onClick={exportSession} className="px-3 py-2 rounded-2xl border border-slate-400/30 hover:shadow flex items-center gap-2"><Download className="w-4 h-4"/>Export</button>
+          </div>
+        </div>
+
+        {/* Top Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {/* Left: Controls & Tips */}
+          <div className="lg:col-span-1 space-y-4">
+            <Card>
+              <div className="flex items-center justify-between mb-3">
+                <div className="font-semibold">Mode</div>
+                <Settings2 className="w-4 h-4 opacity-60"/>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {scenarios.map(s => (
+                  <button key={s.id} onClick={() => setScenarioId(s.id)} className={`rounded-2xl p-3 border text-left hover:shadow ${scenarioId===s.id? 'border-emerald-400 shadow-inner' : 'border-slate-400/30'}`}>
+                    <div className="font-semibold">{s.name}</div>
+                    <div className="text-xs opacity-70">{s.description}</div>
+                  </button>
+                ))}
+              </div>
+            </Card>
+
+            <Card>
+              <div className="flex items-center justify-between mb-3">
+                <div className="font-semibold flex items-center gap-2"><BookOpen className="w-4 h-4"/> Cheat Sheet</div>
+                <ClipboardCheck className="w-4 h-4 opacity-60"/>
+              </div>
+              <ul className="space-y-2">
+                {scenario.systemTips.map((tip, i) => (
+                  <li key={i} className="text-sm flex items-start gap-2"><CheckCircle2 className="w-4 h-4 mt-0.5"/> <span>{tip}</span></li>
+                ))}
+              </ul>
+              <div className="mt-3">
+                <div className="text-xs mb-1 opacity-70">Quick phrases</div>
+                <div className="flex flex-wrap gap-2">
+                  {scenario.quickPhrases.map((p, i) => (
+                    <button key={i} onClick={()=>setInput(prev => (prev? prev+" ":"") + p)} className="text-xs px-2 py-1 rounded-xl border border-slate-400/30 hover:shadow">{p}</button>
+                  ))}
+                </div>
+              </div>
+            </Card>
+
+            <Card>
+              <div className="flex items-center justify-between mb-3">
+                <div className="font-semibold flex items-center gap-2"><Timer className="w-4 h-4"/> Timed Drill</div>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="text-3xl tabular-nums font-mono">{minutes}:{secs}</div>
+                <div className="flex gap-2">
+                  <button onClick={()=>setRunning(true)} className="btn"><Play className="w-4 h-4"/> Start</button>
+                  <button onClick={()=>setRunning(false)} className="btn"><Pause className="w-4 h-4"/> Pause</button>
+                  <button onClick={()=>{setSeconds(120); setRunning(false);}} className="btn"><RotateCcw className="w-4 h-4"/> Reset</button>
+                </div>
+              </div>
+              <input type="range" min={30} max={600} step={15} value={seconds} onChange={e=>setSeconds(Number(e.target.value))} className="w-full mt-3"/>
+            </Card>
+          </div>
+
+          {/* Center: Chat */}
+          <div className="lg:col-span-2 space-y-4">
+            <Card>
+              <div className="flex items-center justify-between mb-3">
+                <div className="font-semibold flex items-center gap-2"><MessageSquare className="w-4 h-4"/> Mock Chat</div>
+                <button onClick={resetSession} className="px-3 py-1.5 rounded-xl border border-slate-400/30 hover:shadow flex items-center gap-2 text-sm"><Trash2 className="w-4 h-4"/> Reset</button>
+              </div>
+              <div className="h-[42vh] overflow-y-auto space-y-2 pr-2" id="chatbox">
+                <AnimatePresence initial={false}>
+                  {chat.map(m => (
+                    <motion.div key={m.id} initial={{opacity:0, y:8}} animate={{opacity:1, y:0}} exit={{opacity:0, y:-8}} transition={{duration:0.2}} className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm shadow ${m.role==='bot' ? 'bg-slate-200/60 dark:bg-slate-800/60' : 'bg-emerald-200/70 dark:bg-emerald-900/30'} ${m.role==='user' ? 'ml-auto' : ''}`}>
+                      <div className="opacity-60 text-[10px]">{m.role==='bot'?'Coach':'You'} • {m.time}</div>
+                      <div className="mt-0.5 leading-relaxed">{m.text}</div>
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
+              </div>
+              <div className="mt-3 flex items-center gap-2">
+                <textarea ref={inputRef} rows={2} value={input} onChange={e=>setInput(e.target.value)} placeholder="Type your reply using the tips…" className="flex-1 rounded-2xl border border-slate-400/30 bg-transparent p-3 focus:outline-none focus:ring-2 focus:ring-emerald-400"/>
+                <button onClick={sendUser} className="btn px-4"><Sparkles className="w-4 h-4"/> Send</button>
+                <button onClick={()=>{const b=[...chat].reverse().find(m=>m.role==='bot'); if(b){const t=suggestReply(b.text, scenarioId); setInput(t);}}} className="btn"><Copy className="w-4 h-4"/> Suggest</button>
+                <button onClick={copyBestReply} className="btn"><ClipboardCheck className="w-4 h-4"/> Copy</button>
+                <button onClick={()=>{ if('speechSynthesis' in window){ const lastBot=[...chat].reverse().find(m=>m.role==='bot'); if(lastBot) speak(lastBot.text); } }} className="btn"><Volume2 className="w-4 h-4"/> Speak</button>
+                <button onClick={()=>{ if(recognitionRef.current){ setListening(true); recognitionRef.current.start(); } }} className={`btn ${listening? 'opacity-70' : ''}`}><Mic className="w-4 h-4"/>{listening? 'Listening…':'Voice'}</button>
+              </div>
+              <div className="mt-2 text-xs opacity-70">Tip: Use <kbd>Enter</kbd> to send (focus the textarea) • Try the "Suggest" button to see a model reply template.</div>
+            </Card>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <Card>
+                <div className="font-semibold mb-2 flex items-center gap-2"><Sparkles className="w-4 h-4"/> Feedback</div>
+                <div className="text-sm">Live quality score</div>
+                <div className="mt-2 text-4xl font-mono">{score}/100</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {scoreTone.map(t => (
+                    <span key={t} className={`text-xs px-2 py-1 rounded-xl ${tonePalette[t]}`}>{t}</span>
+                  ))}
+                </div>
+                <ul className="mt-3 space-y-1 text-sm">
+                  {insights(chat).map((i, idx) => (
+                    <li key={idx} className="flex items-start gap-2">
+                      {i.good ? <CheckCircle2 className="w-4 h-4 text-emerald-500"/> : <XCircle className="w-4 h-4 text-rose-500"/>}
+                      <span>{i.text}</span>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+
+              <Card className="md:col-span-2">
+                <div className="font-semibold mb-2 flex items-center gap-2"><BarChart3 className="w-4 h-4"/> Progress</div>
+                <div className="h-48">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={history.slice(0,10).reverse().map((h,i)=>({ name: new Date(h.date).toLocaleDateString(), score: h.score }))}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" />
+                      <YAxis domain={[0,100]} />
+                      <Tooltip />
+                      <Line type="monotone" dataKey="score" strokeWidth={2} dot />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </Card>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer actions */}
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+          <div className="text-xs opacity-70">Built for focused practice. All data stays in your browser (localStorage).</div>
+          <div className="flex items-center gap-2">
+            <button onClick={saveSession} className="btn"><Save className="w-4 h-4"/> Save Session</button>
+            <button onClick={exportSession} className="btn"><Download className="w-4 h-4"/> Export JSON</button>
+          </div>
+        </div>
+      </div>
+
+      {/* Styles */}
+      <style>{`
+        .btn { @apply px-3 py-2 rounded-2xl border border-slate-400/30 hover:shadow flex items-center gap-2; }
+        .card { @apply rounded-3xl p-4 sm:p-5 border border-slate-400/30 shadow-sm; }
+      `}</style>
+    </div>
+  );
+}
+
+// --- Components ---
+function Card({ children, className="" }) {
+  return (
+    <div className={`card ${className}`}>{children}</div>
+  );
+}
+
+// --- Scoring & heuristics ---
+function computeScore(chat) {
+  const replies = chat.filter(m => m.role === 'user');
+  if (replies.length === 0) return 0;
+  let score = 50;
+  // brevity bonus
+  const avgLen = replies.reduce((a,c)=>a+c.text.split(/\s+/).length,0)/replies.length;
+  if (avgLen >= 8 && avgLen <= 40) score += 10; else score -= 5;
+  // structure keyword bonus
+  const structure = /(first|second|finally|in summary|tl;dr|situation|task|action|result|next steps)/i;
+  if (replies.some(r => structure.test(r.text))) score += 10;
+  // empathy bonus
+  if (replies.some(r => /(sorry|understand|appreciate|thanks|thank you|totally get)/i.test(r.text))) score += 8;
+  // clarity (short sentences)
+  const long = replies.some(r => r.text.split(/[.!?]/).some(s => s.trim().split(/\s+/).length > 28));
+  if (!long) score += 8;
+  // question asking
+  if (replies.some(r => /\?/.test(r.text))) score += 6;
+  // filler penalty
+  if (replies.some(r => /(like,|you know|umm|uh)/i.test(r.text))) score -= 6;
+  // negativity penalty
+  if (replies.some(r => /(hate|stupid|useless|angry)/i.test(r.text))) score -= 10;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function assessTone(chat){
+  const replies = chat.filter(m=>m.role==='user').map(m=>m.text).join(' ').toLowerCase();
+  if (!replies) return ["Neutral"];
+  const tones = [];
+  if (/(thank|appreciate|glad|happy|great|awesome)/.test(replies)) tones.push("Positive");
+  if (/(frustrated|angry|annoyed|disappointed|sad)/.test(replies)) tones.push("Negative");
+  if (tones.length===0) tones.push("Neutral");
+  return Array.from(new Set(tones));
+}
+
+function insights(chat){
+  const out = [];
+  const replies = chat.filter(m=>m.role==='user');
+  if (replies.length===0){
+    out.push({good:false, text:"Send a reply to get feedback."});
+    return out;
+  }
+  const last = replies[replies.length-1].text;
+  if (!/\?/.test(last)) out.push({good:false, text:"End with a thoughtful question to keep the conversation moving."});
+  else out.push({good:true, text:"Nice — you asked a clear question."});
+  if (/\b(I|we) (delivered|achieved|shipped|reduced|increased)/i.test(last)) out.push({good:true, text:"Impact-first phrasing is strong."});
+  if (last.split(/[.!?]/).some(s => s.trim().split(/\s+/).length > 28)) out.push({good:false, text:"Consider breaking long sentences into two."});
+  if (/(sorry|understand|appreciate)/i.test(last)) out.push({good:true, text:"Empathy acknowledged — well done."});
+  if (!/(next|steps|plan|timeline)/i.test(last) && chat.some(m=>m.role==='bot')) out.push({good:false, text:"Propose a concrete next step."});
+  return out.slice(0,5);
+}
+
+function suggestReply(prompt, mode){
+  const base = {
+    casual: (p)=> `That sounds fun! ${p.includes('?')? '' : 'Quick question:'} what's one thing you enjoyed most?`,
+    interview: (p)=> `Certainly. Situation: [brief context]. Task: [your goal]. Action: [what you did]. Result: [measurable impact]. ${p.includes('?')? 'To your question, ' : ''}happy to dive deeper into trade-offs, and I have a follow-up on scope — what does success in 90 days look like?`,
+    support: (p)=> `I’m really sorry about the trouble — I understand how frustrating this is. I’ve checked the common causes and here’s what I’ll do next: [step]. Could you share your order ID so I can fix this right away?`,
+    negotiation: (p)=> `I appreciate the constraints. If we align on [scope], I can meet you at [target] and include [low-cost add-on]. If we sign by Friday, I can also [bonus]. Does that bridge the gap?`
+  };
+  return (base[mode]||base.casual)(prompt||"");
+}
